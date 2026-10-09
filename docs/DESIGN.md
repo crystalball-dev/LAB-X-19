@@ -84,3 +84,20 @@ otherwise), peaks capped at -1 dBFS. Skadovsk Stab sits near -16 because its tra
 `python Tests/run_tests.py`: 33/33 checks, including pitch within 0.05 cents, exact chord intervals, strum and arp
 timing within 0.06 ms, a 300 s fuzz session with no faults, and 7x real time with 16 voices and everything on.
 pluginval strictness 10 passes.
+
+## 0.1.1: runaway guard and fault log
+
+Reported from FL Studio: after playing for a long time (and once while idle) an explosive blast, static, then an
+aftershock. Not reproduced offline: every preset for 90 s with and without DAWN, the shimmer at every size and
+damping with full decay, and about 30 minutes of fuzzing at 1-, 7-, 3000-sample and variable blocks (44.1 and 48 kHz)
+stayed bounded (loudest internal level about +15.6 dBFS, the summed voices of random patches). Static after a
+blast points at huge finite values squashed by the limiter, which the non-finite guard could not see.
+
+- Each voice renders into its own block first. A voice that is non-finite or above +36 dBFS is killed alone.
+- After the voice sum, GRIT, ENSEMBLE, DELAY and REVERB the block peak is checked: non-finite or above +42 dBFS
+  silences the block and resets every effect (a FAULT); above +18 dBFS is logged as "hot" (at most every 2 s per stage).
+- Faults and hot stages go to `%APPDATA%\OPERATION FAIRWAY, LLC\LAB X-19 faults.log` on the message thread: time,
+  stage, peak, note, voices, held keys, tempo and transport, preset, and after a fault every parameter value and the
+  two source statuses. SYSTEM shows the stage of the last fault next to FAULTS.
+- Harness: `--inject <stage>@<s>` plants a runaway (0-4 stage sums, 6 one voice); `--fault-log <file>`. Test 22 checks
+  that every stage is caught, silenced and logged.

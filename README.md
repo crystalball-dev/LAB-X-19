@@ -25,6 +25,9 @@ Ethereal pads, choir pads, arpeggios, stabs, plucks, heavy saws, and clean chord
 - **REGULATOR.** Compressor and a look-ahead limiter at the output ceiling.
 - **DAWN.** One knob that clears the haze: it opens the filter, brightens the choir's vowel, adds shimmer, air and ensemble, and pulls the grit back. The mod wheel adds to it.
 - **19 factory presets**, named after the lore, matched in loudness.
+- **Runaway guard.** Every voice and every effect stage is checked every 16 samples. Anything that blows up is silenced
+  and reset instead of reaching your speakers, counted under FAULTS in SYSTEM, and written to
+  `%APPDATA%\OPERATION FAIRWAY, LLC\LAB X-19 faults.log` with the settings at the time.
 
 ## Playing it in FL Studio
 

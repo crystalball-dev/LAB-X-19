@@ -322,7 +322,13 @@ namespace
                   << " non_finite=" << nonFinite
                   << " peak_db=" << juce::String (juce::Decibels::gainToDecibels (peak, -120.0f), 2)
                   << " faults=" << proc.meters.faults.load()
+                  << " faults_logged=" << proc.flushFaultLog()
                   << timer.summary() << std::endl;
+        const char* stages[] = { "voices", "grit", "ensemble", "delay", "reverb" };
+        for (int k = 0; k < 5; ++k)
+            std::cout << "stage_" << stages[k] << "_peak_db=" << juce::String (juce::Decibels::gainToDecibels (proc.stagePeak[(size_t) k], -120.0f), 1)
+                      << " stage_" << stages[k] << "_hot_s=" << juce::String (proc.stageHotAt[(size_t) k] < 0 ? -1.0 : (double) proc.stageHotAt[(size_t) k] / sampleRate, 2) << " ";
+        std::cout << std::endl;
 
         if (full.getNumSamples() > 0 && ! writeWav (outFile, full, sampleRate))
             std::cerr << "could not write " << outFile.getFullPathName() << std::endl;
@@ -380,6 +386,8 @@ int main (int argc, char* argv[])
     const int prepareBlock = args.contains ("--vary-blocks") ? 4096 : blockSize;
 
     auto proc = std::make_unique<LabX19AudioProcessor>();
+    if (args.contains ("--fault-log"))
+        proc->setFaultLogFile (juce::File (option (args, "--fault-log")));
 
     TestPlayHead playHead;
     const bool useTransport = args.contains ("--bpm");
@@ -461,6 +469,13 @@ int main (int argc, char* argv[])
                                     token.fromFirstOccurrenceOf ("@", false, false).getDoubleValue() });
 
     proc->muteVoices = args.contains ("--mute-voices");
+    if (args.contains ("--inject"))
+    {
+        // "--inject <stage>@<seconds>": stage 0-4 = voices, grit, ensemble, delay, reverb sums; 6 = one voice
+        const auto spec = option (args, "--inject");
+        proc->injectStage = spec.upToFirstOccurrenceOf ("@", false, false).getIntValue();
+        proc->injectAtSample = (juce::int64) (spec.fromFirstOccurrenceOf ("@", false, false).getDoubleValue() * sampleRate);
+    }
 
     // Controller events: "cc:value@seconds"
     struct CcEvent { int cc, value; double time; };
@@ -556,6 +571,7 @@ int main (int argc, char* argv[])
               << " max_jump=" << juce::String (maxJump, 4)
               << " non_finite=" << nonFinite
               << " faults=" << proc->meters.faults.load()
+              << " faults_logged=" << proc->flushFaultLog()
               << " render_ms=" << juce::String (elapsedMs, 1)
               << " realtime_x=" << juce::String (realtimeFactor, 1)
               << timer.summary();

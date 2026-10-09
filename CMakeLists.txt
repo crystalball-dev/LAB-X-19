@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LABX19 VERSION 0.1.0 LANGUAGES C CXX)
+project(LABX19 VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,7 +16,7 @@ add_subdirectory("${LABX19_JUCE_PATH}" JUCE)
 
 juce_add_plugin(LabX19
     PRODUCT_NAME "LAB X-19"
-    VERSION 0.1.0
+    VERSION 0.1.1
     COMPANY_NAME "OPERATION FAIRWAY, LLC"
     COMPANY_WEBSITE "https://github.com/crystalball-dev/LAB-X-19"
     BUNDLE_ID com.operationfairway.labx19

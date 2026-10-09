@@ -431,6 +431,25 @@ def main():
         record(20, "legato slides without retrigger; pedal holds and releases", ok,
                {"dip_db": round(dip, 2), "f_end": round(f_end, 1), "held_db": round(held, 1), "after_release_db": round(after, 1)})
 
+    # 22. Runaway guard: a blowout in one voice or after any effect stage becomes silence, a FAULT and a log line.
+    if want(22):
+        log = OUT / "guard_faults.log"
+        if log.exists():
+            log.unlink()
+        bad = []
+        for stage in (6, 0, 1, 2, 3, 4):
+            wav, st = render(f"guard_{stage}", ["--preset", "0", "--notes", "48,55,64", "--seconds", "3", "--hold", "2.5",
+                                                "--inject", f"{stage}@1.5", "--fault-log", str(log)])
+            data, fs = an.load(str(wav))
+            before = float(np.abs(data[:int(1.45 * fs)]).max())
+            after = float(np.abs(data[int(1.45 * fs):]).max())
+            if st["exit"] != 0 or int(st.get("faults", "0")) < 1 or int(st.get("non_finite", "1")) != 0 or after > before * 1.05:
+                bad.append((stage, st.get("faults"), round(an.db(after), 1)))
+        text = log.read_text(encoding="utf-8") if log.exists() else ""
+        stages = sorted(set(re.findall(r"FAULT  (\w+)", text)))
+        record(22, "runaway guard silences and logs every stage", not bad and len(stages) >= 5,
+               {"failures": bad, "logged_stages": stages})
+
     # 19. pluginval at strictness 10.
     if want(19) and not args.skip_pluginval:
         pluginval = shutil.which("pluginval") or r"F:\_DEV\tools\pluginval\pluginval.exe"

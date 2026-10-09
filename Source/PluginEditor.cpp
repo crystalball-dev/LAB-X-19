@@ -403,7 +403,9 @@ void LabX19AudioProcessorEditor::refreshFromProcessor()
          << "LATENCY   " << m.latency.load() << " smp\n"
          << "PEAK      " << juce::String (m.peakDb.load(), 1) << " dBFS\n"
          << "REGULATE  " << juce::String (m.gainReductionDb.load(), 1) << " dB\n"
-         << "FAULTS    " << m.faults.load() << "\n"
+         << "FAULTS    " << m.faults.load()
+         << (m.lastFaultStage.load() >= 0 ? juce::String ("  ") + LabX19AudioProcessor::stageName (m.lastFaultStage.load()) : juce::String())
+         << "\n"
          << "LIBRARY   " << (library ? "SPECIMENS" : "NOT FOUND") << "\n"
          << "CHOICE    PENDING";
     systemLabel.setText (text, juce::dontSendNotification);

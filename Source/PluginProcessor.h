@@ -15,7 +15,8 @@
 #include "DSP/Voice.h"
 
 class LabX19AudioProcessor final : public juce::AudioProcessor,
-                                   private labx19::dsp::NoteEngine::Sink
+                                   private labx19::dsp::NoteEngine::Sink,
+                                   private juce::Timer
 {
 public:
     LabX19AudioProcessor();
@@ -57,9 +58,17 @@ public:
         std::atomic<float> rmsDb { -100.0f }, peakDb { -100.0f }, dawn { 0.0f }, midiPerSecond { 0.0f };
         std::atomic<float> bpm { 120.0f }, gainReductionDb { 0.0f };
         std::atomic<int> activeVoices { 0 }, faults { 0 }, latency { 0 }, heldKeys { 0 }, arpStep { -1 };
+        std::atomic<int> lastFaultStage { -1 };
         std::atomic<bool> synced { false };
     };
     Meters meters;
+
+    // Runaway guard log: one line per fault or hot stage, with the parameters at the time of a fault.
+    // Written on the message thread to <user app data>\OPERATION FAIRWAY, LLC\LAB X-19 faults.log.
+    static const char* stageName (int stage) noexcept;
+    juce::File getFaultLogFile() const;
+    void setFaultLogFile (const juce::File& file) { faultLogOverride = file; }
+    int flushFaultLog();   // returns the number of entries written
 
     static constexpr int scopeSize = 2048;
     void copyScope (float* dest, int numSamples) const noexcept;
@@ -68,6 +77,12 @@ public:
 
    #if LABX19_HARNESS
     bool muteVoices = false;
+    // Peak level after each stage (voices, grit, ensemble, delay, reverb) and when a stage first passed +12 dBFS.
+    std::array<float, 5> stagePeak {};
+    std::array<int64_t, 5> stageHotAt { -1, -1, -1, -1, -1 };
+    int64_t samplesRendered = 0;
+    int injectStage = -1;          // test hook: a 1e9 sample appears after this stage...
+    int64_t injectAtSample = -1;   // ...in the control block containing this sample
    #endif
 
 private:
@@ -90,6 +105,11 @@ private:
     void voiceOn (int note, float velocity, int tag) noexcept override;
     void voiceOff (int tag) noexcept override;
     void releaseAllVoices() noexcept override;
+
+    void timerCallback() override { flushFaultLog(); }
+
+    static float blockPeak (const float* l, const float* r, int n) noexcept;
+    void noteFault (int stage, int note, float peak, bool fault) noexcept;
 
     void renderControlBlock (float* outL, float* outR, int n) noexcept;
     void updateControl (int n) noexcept;
@@ -169,6 +189,26 @@ private:
     int midiAccumulator = 0, meterSamples = 0;
 
     int currentProgram = 0;
+
+    // Runaway guard
+    static constexpr float voiceLimit = 64.0f;    // +36 dBFS for one voice
+    static constexpr float stageLimit = 128.0f;   // +42 dBFS anywhere in the effect chain
+    static constexpr float hotLevel = 8.0f;       // +18 dBFS: logged, not reset
+    struct FaultEntry
+    {
+        int stage = 0, note = -1, activeVoices = 0, heldKeys = 0;
+        float peakDb = 0.0f;
+        bool fault = false, synced = false;
+        double seconds = 0.0, bpm = 120.0;
+    };
+    std::array<FaultEntry, 64> faultRing {};
+    std::atomic<int> faultWrite { 0 };
+    int faultRead = 0;
+    std::array<int64_t, 6> lastHotAt { -1, -1, -1, -1, -1, -1 };
+    int64_t engineClock = 0;
+    juce::File faultLogOverride;
+    bool faultLogHeaderWritten = false;
+    int preparedBlockSize = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LabX19AudioProcessor)
 };

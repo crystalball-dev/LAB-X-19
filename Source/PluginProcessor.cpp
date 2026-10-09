@@ -18,11 +18,86 @@ LabX19AudioProcessor::LabX19AudioProcessor()
     }
 
     applyPreset (0);
+    startTimer (500);
     specimens.requestChoice ((int) std::lround (rawValue (P::specSource)));
     airSpecimens.requestChoice ((int) std::lround (rawValue (P::airSource)));
 }
 
-LabX19AudioProcessor::~LabX19AudioProcessor() = default;
+LabX19AudioProcessor::~LabX19AudioProcessor()
+{
+    stopTimer();
+    flushFaultLog();
+}
+
+const char* LabX19AudioProcessor::stageName (int stage) noexcept
+{
+    static const char* names[] = { "VOICE", "GRIT", "ENSEMBLE", "DELAY", "REVERB", "OUTPUT" };
+    return juce::isPositiveAndBelow (stage, 6) ? names[stage] : "?";
+}
+
+juce::File LabX19AudioProcessor::getFaultLogFile() const
+{
+    if (faultLogOverride != juce::File())
+        return faultLogOverride;
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile (vendorName).getChildFile (juce::String (pluginName) + " faults.log");
+}
+
+int LabX19AudioProcessor::flushFaultLog()
+{
+    const int written = faultWrite.load (std::memory_order_acquire);
+    if (written == faultRead)
+        return 0;
+
+    // The ring holds the latest 64 entries; anything older was overwritten.
+    const int size = (int) faultRing.size();
+    const int from = std::max (faultRead, written - size);
+    const int lost = from - faultRead;
+    faultRead = written;
+
+    auto file = getFaultLogFile();
+    file.getParentDirectory().createDirectory();
+    juce::FileOutputStream out (file);
+    if (! out.openedOk())
+        return 0;
+    out.setPosition (out.getFile().getSize());
+
+    const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H:%M:%S");
+    if (! faultLogHeaderWritten)
+    {
+        faultLogHeaderWritten = true;
+        out << "\n" << stamp << "  " << pluginName << " " << versionString << "  sample rate " << (int) currentSampleRate
+            << "  block " << preparedBlockSize << "\n";
+    }
+    if (lost > 0)
+        out << stamp << "  (" << lost << " entries lost: too many in half a second)\n";
+
+    int count = 0;
+    bool wantParams = false;
+    for (int i = from; i < written; ++i)
+    {
+        const auto f = faultRing[(size_t) (i % size)];
+        out << stamp << "  " << (f.fault ? "FAULT" : "hot  ") << "  " << juce::String (stageName (f.stage)).paddedRight (' ', 8)
+            << " peak " << (f.peakDb > 900.0f ? juce::String ("non-finite") : juce::String (f.peakDb, 1) + " dBFS")
+            << "  note " << (f.note >= 0 ? juce::String (f.note) : juce::String ("-"))
+            << "  at " << juce::String (f.seconds, 2) << " s  voices " << f.activeVoices << "  keys " << f.heldKeys
+            << "  bpm " << juce::String (f.bpm, 1) << (f.synced ? " playing" : " stopped")
+            << "  preset " << getProgramName (currentProgram) << "\n";
+        wantParams = wantParams || f.fault;
+        ++count;
+    }
+
+    if (wantParams)
+    {
+        juce::String line ("    params:");
+        for (const auto& spec : paramSpecs())
+            line << " " << spec.id << "=" << juce::String (apvts.getRawParameterValue (spec.id)->load(), 3);
+        line << "  specimen=\"" << specimens.getStatusText() << "\" air=\"" << airSpecimens.getStatusText() << "\"";
+        out << line << "\n";
+    }
+    out.flush();
+    return count;
+}
 
 void LabX19AudioProcessor::setLibraryRoot (const juce::File& folder, bool persist)
 {
@@ -31,8 +106,9 @@ void LabX19AudioProcessor::setLibraryRoot (const juce::File& folder, bool persis
 }
 
 //==============================================================================
-void LabX19AudioProcessor::prepareToPlay (double sampleRate, int)
+void LabX19AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    preparedBlockSize = samplesPerBlock;
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
     const auto sr = (float) currentSampleRate;
 
@@ -314,9 +390,33 @@ void LabX19AudioProcessor::renderControlBlock (float* outL, float* outR, int n) 
 
     voiceParams.specimen = blockSpecimen;
     voiceParams.air = blockAir;
+
+    // Each voice renders on its own first, so a voice that runs away can be stopped alone and named in the log.
+    std::array<float, controlBlock> vl {}, vr {};
     for (auto& v : voices)
-        if (v.isActive())
-            v.render (outL, outR, n, voiceParams);
+    {
+        if (! v.isActive())
+            continue;
+        std::fill_n (vl.data(), n, 0.0f);
+        std::fill_n (vr.data(), n, 0.0f);
+        v.render (vl.data(), vr.data(), n, voiceParams);
+       #if LABX19_HARNESS
+        if (injectStage == 6 && injectAtSample >= samplesRendered && injectAtSample < samplesRendered + n)
+            vl[0] = std::numeric_limits<float>::infinity();
+       #endif
+        const float pk = blockPeak (vl.data(), vr.data(), n);
+        if (! (pk <= voiceLimit))
+        {
+            noteFault (0, v.getNote(), pk, true);
+            v.kill();
+            continue;
+        }
+        for (int i = 0; i < n; ++i)
+        {
+            outL[i] += vl[(size_t) i];
+            outR[i] += vr[(size_t) i];
+        }
+    }
 
    #if LABX19_HARNESS
     if (muteVoices)
@@ -335,10 +435,53 @@ void LabX19AudioProcessor::renderControlBlock (float* outL, float* outR, int n) 
         outR[i] *= lfoLevelGain;
     }
 
+    // Runaway guard: after every stage the block's peak is checked. Above +18 dBFS the stage is logged as hot;
+    // non-finite or above +42 dBFS it is a fault: the block is silenced and every effect starts again from zero.
+    bool runaway = false;
+    auto check = [&] (int stage)
+    {
+        if (runaway)
+            return;
+       #if LABX19_HARNESS
+        if (stage == injectStage && injectAtSample >= samplesRendered && injectAtSample < samplesRendered + n)
+            outL[0] = 1.0e9f;
+       #endif
+        const float pk = blockPeak (outL, outR, n);
+       #if LABX19_HARNESS
+        stagePeak[(size_t) stage] = std::max (stagePeak[(size_t) stage], std::isfinite (pk) ? pk : 1.0e30f);
+        if (! (pk <= 4.0f) && stageHotAt[(size_t) stage] < 0)
+            stageHotAt[(size_t) stage] = samplesRendered;
+       #endif
+        if (! (pk <= stageLimit))
+        {
+            runaway = true;
+            noteFault (stage, -1, pk, true);
+        }
+        else if (pk > hotLevel)
+        {
+            noteFault (stage, -1, pk, false);
+        }
+    };
+
+    check (0);
     grit.process (outL, outR, n, gritModeValue, gritAmountValue, gritDriveValue, gritToneValue, gritDustValue);
+    check (1);
     ensemble.process (outL, outR, n, ensMixValue, ensDepthValue, ensRateValue);
+    check (2);
     echo.process (outL, outR, n, delayMixValue, delaySecondsValue, delayFeedbackValue, delayToneValue, delayPingPong);
+    check (3);
     reverb.process (outL, outR, n);
+    check (4);
+   #if LABX19_HARNESS
+    samplesRendered += n;
+   #endif
+
+    if (runaway)
+    {
+        std::fill_n (outL, n, 0.0f);
+        std::fill_n (outR, n, 0.0f);
+        recoverFromFault();
+    }
 
     const float gainTarget = dsp::dbToGain (values[P::volume]);
     for (int i = 0; i < n; ++i)
@@ -390,7 +533,12 @@ void LabX19AudioProcessor::renderControlBlock (float* outL, float* outR, int n) 
     }
 
     if (fault)
+    {
+        noteFault (5, -1, std::numeric_limits<float>::quiet_NaN(), true);
         recoverFromFault();
+    }
+
+    engineClock += n;
 
     if (switchState == SwitchState::fadingOut && switchFadeRemaining == 0)
     {
@@ -551,6 +699,52 @@ void LabX19AudioProcessor::flushForProgramChange() noexcept
     masterGain = dsp::dbToGain (rawValue (P::volume));
 }
 
+float LabX19AudioProcessor::blockPeak (const float* l, const float* r, int n) noexcept
+{
+    // NaN never compares, so a non-finite sample turns the result into NaN, which every guard treats as a fault.
+    float pk = 0.0f;
+    for (int i = 0; i < n; ++i)
+    {
+        const float a = std::abs (l[i]), b = std::abs (r[i]);
+        if (! (a < 3.0e38f) || ! (b < 3.0e38f))
+            return std::numeric_limits<float>::quiet_NaN();
+        pk = std::max (pk, std::max (a, b));
+    }
+    return pk;
+}
+
+void LabX19AudioProcessor::noteFault (int stage, int note, float peak, bool fault) noexcept
+{
+    const int64_t now = engineClock;
+    if (! fault)
+    {
+        // Hot warnings: at most one per stage every two seconds.
+        auto& last = lastHotAt[(size_t) stage];
+        if (last >= 0 && now - last < (int64_t) (2.0 * currentSampleRate))
+            return;
+        last = now;
+    }
+
+    const int index = faultWrite.load (std::memory_order_relaxed);
+    auto& f = faultRing[(size_t) (index % (int) faultRing.size())];
+    f.stage = stage;
+    f.note = note;
+    f.peakDb = std::isfinite (peak) ? juce::Decibels::gainToDecibels (peak, -120.0f) : 999.0f;
+    f.fault = fault;
+    f.seconds = (double) now / currentSampleRate;
+    f.activeVoices = meters.activeVoices.load (std::memory_order_relaxed);
+    f.heldKeys = engine.getHeldKeyCount();
+    f.bpm = transport.bpm;
+    f.synced = transport.synced;
+    faultWrite.store (index + 1, std::memory_order_release);
+
+    if (fault)
+    {
+        meters.faults.fetch_add (1);
+        meters.lastFaultStage.store (stage);
+    }
+}
+
 void LabX19AudioProcessor::recoverFromFault() noexcept
 {
     for (auto& v : voices)
@@ -561,8 +755,8 @@ void LabX19AudioProcessor::recoverFromFault() noexcept
     echo.reset();
     reverb.flush();
     regulator.reset();
+    lfo.reset();
     dcInL = dcInR = dcOutL = dcOutR = 0.0f;
-    meters.faults.fetch_add (1);
 }
 
 //==============================================================================
