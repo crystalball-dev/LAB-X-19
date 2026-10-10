@@ -4,7 +4,7 @@ namespace labx19
 {
     inline constexpr const char* pluginName    = "LAB X-19";
     inline constexpr const char* vendorName    = "OPERATION FAIRWAY, LLC";
-    inline constexpr const char* versionString = "0.1.1";
+    inline constexpr const char* versionString = "0.1.2";
     inline constexpr const char* projectUrl    = "github.com/crystalball-dev/LAB-X-19";
 
     inline constexpr int maxVoices    = 16;   // one voice per sounding note; chords take one voice per chord note

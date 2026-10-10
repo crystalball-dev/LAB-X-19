@@ -101,3 +101,21 @@ blast points at huge finite values squashed by the limiter, which the non-finite
   two source statuses. SYSTEM shows the stage of the last fault next to FAULTS.
 - Harness: `--inject <stage>@<s>` plants a runaway (0-4 stage sums, 6 one voice); `--fault-log <file>`. Test 22 checks
   that every stage is caught, silenced and logged.
+
+## 0.1.2: the cause, a past-the-end read in DelayLine
+
+The 0.1.1 fault log from FL (project KEYS, 48 kHz, 64-sample blocks, 130.1 BPM, C-Consciousness, no voices, no keys)
+showed `FAULT ENSEMBLE` at +51 dBFS every 45.80 s, and once +330 dBFS. With no input the ensemble could only produce
+that by reading memory that was not its own.
+
+`DelayLine::read` wrapped a float position: `pos = write - delay; if (pos < 0) pos += size; i0 = (int) pos`. When
+`write - delay` is a fraction of a float step below zero, `pos + size` rounds to exactly `size` and `i0` is one past the
+end. The ENSEMBLE's swept taps (and the delay, reverb, pre-delay and shimmer lines, all the same class) hit that
+alignment on a fixed cycle, so the blowout repeated with a fixed period even while idle; what was read depended on the
+host's heap, which is why offline renders stayed silent. Replaying the logged session with the old read instrumented
+to return a marker past the end produced periodic faults while idle (every 39.14 s in the harness).
+
+The fix splits the delay into whole and fractional parts before wrapping, so both indices are integers in range by
+construction. Tests 23 (793,236 reads against a double-precision reference, including the boundary; worst error
+1.2e-7) and 24 (the logged FL session, 240 s idle, no faults) guard it. LAB X-3's NOOSPHERE `Line::read` has the same
+pattern; the LAB X-3 session was told.

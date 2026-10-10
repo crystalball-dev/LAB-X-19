@@ -171,16 +171,22 @@ namespace labx19::dsp
         }
 
         // delay in samples, measured back from the most recent push (1 = the latest sample)
+        // The whole and fractional parts of the delay are split before any wrap-around, so the indices are pure
+        // integer arithmetic. (0.1.1 and earlier wrapped a float position: write - delay a hair below zero, plus
+        // size, rounded to exactly size and read one sample past the end of the buffer. That garbage was the
+        // ENSEMBLE blowout logged in FL.)
         float read (float delay) const noexcept
         {
             delay = std::clamp (delay, 1.0f, (float) (size - 2));
-            float pos = (float) write - delay;
-            if (pos < 0.0f)
-                pos += (float) size;
-            const int i0 = (int) pos;
-            const int i1 = i0 + 1 < size ? i0 + 1 : 0;
-            const float frac = pos - (float) i0;
-            return buffer[(size_t) i0] + frac * (buffer[(size_t) i1] - buffer[(size_t) i0]);
+            const int whole = (int) delay;
+            const float frac = delay - (float) whole;
+            int a = write - whole;   // whole samples back (write - 1 is the newest)
+            if (a < 0)
+                a += size;
+            int b = a - 1;           // one further back
+            if (b < 0)
+                b += size;
+            return buffer[(size_t) a] + frac * (buffer[(size_t) b] - buffer[(size_t) a]);
         }
     };
 

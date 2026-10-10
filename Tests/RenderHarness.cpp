@@ -337,6 +337,47 @@ namespace
     }
 }
 
+// DelayLine reads compared with a double-precision reference, including delays that put the read position a
+// fraction of a float's resolution below zero, where 0.1.1 read past the end of the buffer.
+static int selfTestDelayLine()
+{
+    labx19::dsp::DelayLine line;
+    const int size = 1928;   // the ENSEMBLE line at 48 kHz
+    line.prepare (size);
+    juce::Random rnd (19);
+    std::vector<double> history ((size_t) size, 0.0);
+    double worst = 0.0;
+    long checks = 0;
+
+    for (int step = 0; step < 200000; ++step)
+    {
+        const float x = (float) rnd.nextDouble() * 2.0f - 1.0f;
+        line.push (x);
+        history[(size_t) (step % size)] = x;
+        const int written = step + 1;   // samples pushed so far; the newest is 1 sample back
+
+        float delays[4] = { 1.0f + (float) rnd.nextDouble() * (float) (size - 4),
+                            (float) (line.write) + 1.0e-5f,          // write - delay just below zero
+                            (float) (line.write) + 3.0e-5f,
+                            (float) (size - 2) };
+        for (float d : delays)
+        {
+            const double dd = std::clamp ((double) d, 1.0, (double) (size - 2));
+            if (dd >= written)
+                continue;
+            const int whole = (int) dd;
+            const double frac = dd - whole;
+            const double a = history[(size_t) ((written - whole) % size)];
+            const double b = history[(size_t) ((written - whole - 1 + size) % size)];
+            const double ref = a + frac * (b - a);
+            worst = std::max (worst, std::abs ((double) line.read (d) - ref));
+            ++checks;
+        }
+    }
+    std::cout << "delayline_checks=" << checks << " delayline_worst_error=" << worst << std::endl;
+    return worst < 1.0e-3 ? 0 : 1;
+}
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -344,6 +385,9 @@ int main (int argc, char* argv[])
     juce::StringArray args;
     for (int i = 1; i < argc; ++i)
         args.add (juce::String::fromUTF8 (argv[i]));
+
+    if (args.contains ("--selftest-delay"))
+        return selfTestDelayLine();
 
     if (args.contains ("--list"))
     {

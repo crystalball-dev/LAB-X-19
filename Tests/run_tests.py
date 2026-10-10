@@ -450,6 +450,21 @@ def main():
         record(22, "runaway guard silences and logs every stage", not bad and len(stages) >= 5,
                {"failures": bad, "logged_stages": stages})
 
+    # 23. Delay lines read exactly, never past the end (the 0.1.1 ENSEMBLE blowout).
+    if want(23):
+        proc = subprocess.run([str(HARNESS), "--selftest-delay"], capture_output=True, text=True)
+        record(23, "delay lines: exact reads at the wrap-around boundary", proc.returncode == 0, {"output": proc.stdout.strip()})
+
+    # 24. The FL session that blew up: C-Consciousness idle with the transport playing, 64-sample blocks, 130.1 BPM.
+    if want(24):
+        log = OUT / "idle_faults.log"
+        if log.exists():
+            log.unlink()
+        _, st = render("idle_fl_session", ["--preset", "C-Consciousness", "--no-notes", "--seconds", "240", "--block", "64",
+                                            "--bpm", "130.1", "--fault-log", str(log)])
+        record(24, "idle C-Consciousness for 240 s: no faults", int(st.get("faults", "1")) == 0 and st["exit"] == 0,
+               {"faults": st.get("faults"), "peak_db": st.get("peak_db")})
+
     # 19. pluginval at strictness 10.
     if want(19) and not args.skip_pluginval:
         pluginval = shutil.which("pluginval") or r"F:\_DEV\tools\pluginval\pluginval.exe"
