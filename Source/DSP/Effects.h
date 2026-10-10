@@ -154,14 +154,23 @@ namespace labx19::dsp
         std::vector<float> buffer;
         int write = 0, size = 0;
 
+        // One extra slot past the end holds a sentinel that no correct read ever touches. If a read ever strays
+        // there again, the self-test sees a 1e6 error and the runaway guard sees a +120 dBFS spike at once.
+        static constexpr float sentinel = 1.0e6f;
+
         void prepare (int samples)
         {
             size = std::max (4, samples);
-            buffer.assign ((size_t) size, 0.0f);
+            buffer.assign ((size_t) size + 1, 0.0f);
+            buffer[(size_t) size] = sentinel;
             write = 0;
         }
 
-        void reset() noexcept { std::fill (buffer.begin(), buffer.end(), 0.0f); write = 0; }
+        void reset() noexcept
+        {
+            std::fill (buffer.begin(), buffer.begin() + size, 0.0f);
+            write = 0;
+        }
 
         void push (float x) noexcept
         {

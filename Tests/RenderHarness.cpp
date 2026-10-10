@@ -338,7 +338,8 @@ namespace
 }
 
 // DelayLine reads compared with a double-precision reference, including delays that put the read position a
-// fraction of a float's resolution below zero, where 0.1.1 read past the end of the buffer.
+// fraction of a float's resolution below zero, where 0.1.1 read past the end of the buffer. The slot past the end
+// holds a 1e6 sentinel, so a stray read shows up as a huge error (the 0.1.1 read fails this test).
 static int selfTestDelayLine()
 {
     labx19::dsp::DelayLine line;
